@@ -1,425 +1,424 @@
+"""
+Super-Heroes Analytics — Versão Streamlit (layout executivo)
+- Uso: streamlit run app.py
+- Coloque os arquivos heroes_information.csv e super_hero_powers.csv
+  na mesma pasta OU faça upload via interface.
+- Inclui: exploração, clustering (KMeans), classificação (Naive Bayes),
+  regressão de peso (LinearRegression) e documentação de uso na UI.
+"""
+
+from typing import Tuple, Optional
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from sklearn.naive_bayes import BernoulliNB
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
+from sklearn.linear_model import LinearRegression
 
-# ---------------------------------------------------------
-# CONFIGURAÇÃO INICIAL DA PÁGINA
-# ---------------------------------------------------------
+# ---------------------------
+# Config page
+# ---------------------------
 st.set_page_config(
-    page_title="Super-Heróis – Exploração e Modelos",
-    layout="wide"
+    page_title="Super-Heroes Analytics — Desafio Alelo",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("🦸‍♀️ Super-Heróis: Exploração e Modelos de Machine Learning")
+# ---------------------------
+# Utility: Load Data
+# ---------------------------
+@st.cache_data(show_spinner=False)
+def load_csv_safe(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+@st.cache_data(show_spinner=False)
+def load_data_from_files(heroes_path: Optional[str], powers_path: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    # If user provided paths, try load; otherwise create empty frames
+    heroes_df = pd.DataFrame()
+    powers_df = pd.DataFrame()
+    if heroes_path:
+        heroes_df = load_csv_safe(heroes_path)
+    if powers_path:
+        powers_df = load_csv_safe(powers_path)
+    return heroes_df, powers_df
+
+# ---------------------------
+# Sidebar: Inputs & Uploads
+# ---------------------------
+st.sidebar.title("Controles")
+st.sidebar.markdown("Faça upload dos datasets ou deixe em branco para carregar do diretório atual.")
+
+heroes_file = st.sidebar.file_uploader("Upload: heroes_information.csv", type=["csv"])
+powers_file = st.sidebar.file_uploader("Upload: super_hero_powers.csv", type=["csv"])
+
+use_local_files = False
+if not heroes_file or not powers_file:
+    # Tenta carregar arquivos locais automaticamente
+    try:
+        heroes_local = "heroes_information.csv"
+        powers_local = "super_hero_powers.csv"
+        # carrega se existirem
+        heroes_df_local = load_csv_safe(heroes_local)
+        powers_df_local = load_csv_safe(powers_local)
+        use_local_files = True
+    except Exception:
+        heroes_df_local = pd.DataFrame()
+        powers_df_local = pd.DataFrame()
+else:
+    heroes_df_local = pd.DataFrame()
+    powers_df_local = pd.DataFrame()
+
+if heroes_file:
+    heroes_df = pd.read_csv(heroes_file)
+else:
+    heroes_df = heroes_df_local
+
+if powers_file:
+    powers_df = pd.read_csv(powers_file)
+else:
+    powers_df = powers_df_local
+
+# If still empty, show instruction and stop early
+if heroes_df.empty and powers_df.empty:
+    st.title("Super-Heroes Analytics — Desafio Alelo")
+    st.warning(
+        "Nenhum dataset fornecido. Por favor faça upload dos arquivos CSV no painel lateral "
+        "ou coloque 'heroes_information.csv' e 'super_hero_powers.csv' na mesma pasta deste script."
+    )
+    st.stop()
+
+# ---------------------------
+# Preprocess helpers
+# ---------------------------
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # Normaliza nomes de colunas para evitar mismatch
+    df = df.rename(columns=lambda x: x.strip())
+    return df
+
+heroes_df = normalize_columns(heroes_df)
+powers_df = normalize_columns(powers_df)
+
+# Tenta harmonizar colunas comuns
+# Algumas versões do dataset usam 'Alignment' vs 'alignment', 'Weight' vs 'Weight lbs', etc.
+def harmonize_heroes(df: pd.DataFrame) -> pd.DataFrame:
+    # copy to avoid side-effects
+    df = df.copy()
+    # common fixes
+    candidates = {c.lower(): c for c in df.columns}
+    # lowercase map
+    lowermap = {c.lower(): c for c in df.columns}
+    # unify some column names if present
+    if 'alignment' in lowermap:
+        df = df.rename(columns={lowermap['alignment']: 'Alignment'})
+    if 'gender' in lowermap:
+        df = df.rename(columns={lowermap['gender']: 'Gender'})
+    # Height & Weight normalization (keep numeric part)
+    for col in df.columns:
+        if col.lower().startswith("height"):
+            df = df.rename(columns={col: 'Height'})
+        if col.lower().startswith("weight"):
+            df = df.rename(columns={col: 'Weight'})
+    return df
+
+heroes_df = harmonize_heroes(heroes_df)
+
+# Convert Height/Weight to numeric if possible (extract numeric)
+def to_numeric_strip(x):
+    try:
+        if pd.isna(x):
+            return np.nan
+        if isinstance(x, str):
+            # remove non-digit, dot, minus
+            s = ''.join(ch for ch in x if ch.isdigit() or ch in ".-")
+            return float(s) if s != "" else np.nan
+        return float(x)
+    except Exception:
+        return np.nan
+
+if 'Height' in heroes_df.columns:
+    heroes_df['Height'] = heroes_df['Height'].apply(to_numeric_strip)
+
+if 'Weight' in heroes_df.columns:
+    heroes_df['Weight'] = heroes_df['Weight'].apply(to_numeric_strip)
+
+# ---------------------------
+# App Layout: Header
+# ---------------------------
+st.markdown("<h1 style='margin-bottom:6px'>Super-Heroes Analytics — Desafio Alelo</h1>", unsafe_allow_html=True)
+st.markdown("<small>Exploração, clustering, classificação e regressão — interface executiva</small>", unsafe_allow_html=True)
+st.markdown("---")
+
+# ---------------------------
+# Section: Dataset Explorer
+# ---------------------------
+st.header("Exploração dos Dados")
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    ds_choice = st.selectbox("Dataset para visualizar", ["Heroes Information", "Super Hero Powers"])
+    nrows = st.number_input("Linhas a mostrar", min_value=3, max_value=100, value=10, step=1)
+    show_stats = st.checkbox("Mostrar estatísticas descritivas", value=True)
+
+with col2:
+    # quick filters
+    st.markdown("**Filtros rápidos (heroes)**")
+    if 'Alignment' in heroes_df.columns:
+        align_vals = sorted(heroes_df['Alignment'].dropna().unique().tolist())
+        selected_align = st.multiselect("Alignment", options=align_vals, default=align_vals)
+    else:
+        selected_align = []
+    if 'Gender' in heroes_df.columns:
+        gender_vals = sorted(heroes_df['Gender'].dropna().unique().tolist())
+        selected_gender = st.multiselect("Gender", options=gender_vals, default=gender_vals)
+    else:
+        selected_gender = []
+    # publisher / publisherName
+    pub_cols = [c for c in heroes_df.columns if 'publisher' in c.lower() or 'publisher' in ' '.join(heroes_df.columns).lower()]
+    if pub_cols:
+        pub_col = pub_cols[0]
+        pub_vals = sorted(heroes_df[pub_col].dropna().unique().tolist())
+        selected_publisher = st.multiselect("Publisher", options=pub_vals, default=pub_vals)
+    else:
+        pub_col = None
+        selected_publisher = []
+
+st.write("")  # spacing
+
+# show chosen dataset
+if ds_choice == "Heroes Information":
+    df_show = heroes_df.copy()
+else:
+    df_show = powers_df.copy()
+
+# Apply filters (if on heroes dataset)
+if ds_choice == "Heroes Information" and not df_show.empty:
+    if 'Alignment' in df_show.columns and selected_align:
+        df_show = df_show[df_show['Alignment'].isin(selected_align)]
+    if 'Gender' in df_show.columns and selected_gender:
+        df_show = df_show[df_show['Gender'].isin(selected_gender)]
+    if pub_col and selected_publisher:
+        df_show = df_show[df_show[pub_col].isin(selected_publisher)]
+
+# Display dataframe and stats
+st.subheader("Visualização")
+st.dataframe(df_show.head(nrows), use_container_width=True)
+
+if show_stats and not df_show.empty:
+    st.subheader("Estatísticas descritivas (numéricas)")
+    st.dataframe(df_show.describe(include=[np.number]).T, use_container_width=True)
+
+st.markdown("---")
+
+# ---------------------------
+# Section: Clustering (KMeans)
+# ---------------------------
+st.header("Análise de Clusters (KMeans)")
+
+# Prepare data for clustering: use Height/Weight and optionally other numeric features
+cluster_cols = []
+if 'Height' in heroes_df.columns and 'Weight' in heroes_df.columns:
+    cluster_cols = ['Height', 'Weight']
+else:
+    # find numeric columns
+    cluster_cols = heroes_df.select_dtypes(include=[np.number]).columns.tolist()
+
+if len(cluster_cols) < 2:
+    st.warning("Não há colunas numéricas suficientes para gerar um clustering significativo (precisa de pelo menos 2).")
+else:
+    n_clusters = st.slider("Número de clusters (K)", 2, 8, 3)
+    run_cluster = st.button("Gerar Clustering")
+    if run_cluster:
+        # prepare data
+        cluster_df = heroes_df[cluster_cols].dropna()
+        X = cluster_df.values
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X)
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        preds = kmeans.fit_predict(Xs)
+        cluster_df = cluster_df.assign(cluster=preds)
+
+        # Project to 2D for plotting: if more than 2 dimensions, use the first two PC-like axes (here we'll use scaled first two cols)
+        x_axis = cluster_cols[0]
+        y_axis = cluster_cols[1] if len(cluster_cols) > 1 else cluster_cols[0]
+
+        # Merge cluster labels back into a sample of hero names if available
+        result_df = heroes_df.loc[cluster_df.index].copy()
+        result_df = result_df.reset_index(drop=True)
+        cluster_df = cluster_df.reset_index(drop=True)
+        result_df['cluster'] = cluster_df['cluster']
+
+        # Interactive scatter with Plotly
+        fig = px.scatter(
+            result_df,
+            x=x_axis, y=y_axis,
+            color=result_df['cluster'].astype(str),
+            hover_data=result_df.columns,
+            title=f"KMeans (k={n_clusters}) — {x_axis} x {y_axis}",
+            width=900, height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Show cluster summary
+        st.subheader("Resumo por cluster")
+        summary = result_df.groupby('cluster')[[x_axis, y_axis]].agg(['count', 'mean', 'median']).round(2)
+        st.dataframe(summary, use_container_width=True)
+
+        # Interpretation text
+        st.markdown("**Interpretação rápida:**")
+        st.markdown(
+            "Os clusters acima agrupam heróis com características semelhantes em altura e peso. "
+            "Use o resumo por cluster para identificar grupos de 'mais altos/pesados', 'baixos/leves' etc. "
+            "Para aprofundar, experimente alterar o número de clusters (K)."
+        )
+
+st.markdown("---")
+
+# ---------------------------
+# Section: Classification (Naive Bayes)
+# ---------------------------
+st.header("Classificação de Alinhamento (Naive Bayes)")
+
+# Prepare classifier if possible
+can_train_clf = all(col in heroes_df.columns for col in ['Alignment', 'Height', 'Weight', 'Gender'])
+if not can_train_clf:
+    st.info("Dados insuficientes para treinar o classificador. Os dados precisam conter: Alignment, Height, Weight, Gender.")
+else:
+    with st.expander("Treinar modelo Naive Bayes (ver detalhes)"):
+        st.write("O classificador usa Height, Weight e Gender como features.")
+        if st.button("Treinar modelo agora"):
+            df_clf = heroes_df[['Alignment', 'Height', 'Weight', 'Gender']].dropna().copy()
+            # Encode gender (categorical)
+            df_clf['Gender_code'] = pd.Categorical(df_clf['Gender']).codes
+            X = df_clf[['Height', 'Weight', 'Gender_code']]
+            y = df_clf['Alignment']
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            clf = GaussianNB()
+            clf.fit(X_train, y_train)
+            acc = clf.score(X_test, y_test)
+            st.success(f"Modelo treinado. Acurácia (test): {acc:.3f}")
+            # cache model in session state
+            st.session_state['alignment_model'] = clf
+
+    st.markdown("**Predizer alinhamento para um herói**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        in_height = st.number_input("Height (para predição)", value=float(180.0))
+    with c2:
+        in_weight = st.number_input("Weight (para predição)", value=float(80.0))
+    with c3:
+        in_gender = st.selectbox("Gender", options=sorted(heroes_df['Gender'].dropna().unique().tolist()))
+
+    if st.button("Prever Alinhamento"):
+        if 'alignment_model' not in st.session_state:
+            # train on the fly
+            df_clf = heroes_df[['Alignment', 'Height', 'Weight', 'Gender']].dropna().copy()
+            df_clf['Gender_code'] = pd.Categorical(df_clf['Gender']).codes
+            X = df_clf[['Height', 'Weight', 'Gender_code']]
+            y = df_clf['Alignment']
+            clf = GaussianNB()
+            clf.fit(X, y)
+            st.session_state['alignment_model'] = clf
+            # Also keep mapping
+            st.session_state['gender_categories'] = list(pd.Categorical(df_clf['Gender']).categories)
+        model = st.session_state['alignment_model']
+        # map gender to code (attempt find)
+        try:
+            gender_categories = st.session_state.get('gender_categories', list(pd.Categorical(heroes_df['Gender']).categories))
+            gender_code = gender_categories.index(in_gender)
+        except Exception:
+            gender_code = 0
+        pred = model.predict([[in_height, in_weight, gender_code]])[0]
+        proba = model.predict_proba([[in_height, in_weight, gender_code]]) if hasattr(model, "predict_proba") else None
+        st.write(f"**Previsão:** {pred}")
+        if proba is not None:
+            # show class probabilities
+            classes = model.classes_
+            probs = dict(zip(classes, proba[0].round(3)))
+            st.write("Probabilidades:", probs)
+
+st.markdown("---")
+
+# ---------------------------
+# Section: Regression (Weight prediction)
+# ---------------------------
+st.header("Previsão de Peso (Regressão Linear simples)")
+
+can_train_reg = 'Height' in heroes_df.columns and 'Weight' in heroes_df.columns
+if not can_train_reg:
+    st.info("Dados insuficientes para treinar regressão (necessita Height e Weight).")
+else:
+    with st.expander("Treinar / visualizar regressão"):
+        df_reg = heroes_df[['Height', 'Weight']].dropna()
+        st.write("Ajuste por regressão linear simples (Weight ~ Height).")
+        if st.button("Treinar regressão"):
+            X = df_reg[['Height']].values.reshape(-1, 1)
+            y = df_reg['Weight'].values
+            reg = LinearRegression()
+            reg.fit(X, y)
+            st.session_state['reg_model'] = reg
+            st.success("Regressão treinada e armazenada na sessão.")
+            st.write(f"Coeficiente (slope): {reg.coef_[0]:.4f} ; Intercept: {reg.intercept_:.2f}")
+
+        # plot scatter + regression line if model exists or on-the-fly
+        fig, ax = plt.subplots(figsize=(8, 4))
+        sns.scatterplot(data=df_reg, x='Height', y='Weight', ax=ax, alpha=0.6)
+        if 'reg_model' in st.session_state:
+            reg = st.session_state['reg_model']
+            xs = np.linspace(df_reg['Height'].min(), df_reg['Height'].max(), 100)
+            ys = reg.predict(xs.reshape(-1, 1))
+            ax.plot(xs, ys, linewidth=2, label='Regressão')
+            ax.legend()
+        ax.set_title("Height x Weight (scatter + regressão)")
+        st.pyplot(fig)
+
+    st.markdown("**Prever peso a partir da altura**")
+    pred_height = st.number_input("Height para prever peso", value=175.0)
+    if st.button("Prever Peso"):
+        if 'reg_model' not in st.session_state:
+            # train quickly if not present
+            X = df_reg[['Height']].values.reshape(-1, 1)
+            y = df_reg['Weight'].values
+            reg = LinearRegression()
+            reg.fit(X, y)
+            st.session_state['reg_model'] = reg
+        reg = st.session_state['reg_model']
+        pred_weight = reg.predict(np.array([[pred_height]]))[0]
+        st.success(f"Peso previsto: {pred_weight:.2f} (unidades conforme dataset)")
+
+st.markdown("---")
+
+# ---------------------------
+# Section: Documentation / Instruções
+# ---------------------------
+st.header("Documentação e instruções rápidas")
 st.markdown(
     """
-Aplicação interativa para explorar os dados de super-heróis e interagir com:
+    **Como usar este app**  
+    1. Faça upload dos CSVs (ou coloque na mesma pasta que este script).  
+    2. Explore as tabelas na seção "Exploração dos Dados". Use filtros para reduzir o subconjunto.  
+    3. Em "Análise de Clusters", ajuste K e gere os clusters para inspecionar grupos.  
+    4. Em "Classificação", treine o modelo e use os controles para prever alinhamento.  
+    5. Em "Previsão de Peso", treine a regressão e faça previsões a partir da altura.  
 
-- **Clustering** dos heróis pelos poderes (Questão 1)  
-- **Classificação** de alinhamento (good/bad) usando Naive Bayes (Questão 3)  
-- **Regressão** para prever peso (Questão 5)  
-
-Use o menu lateral para navegar entre as seções.
-"""
+    **Observações técnicas**  
+    - O pré-processamento tenta extrair números de colunas Height/Weight textuais.  
+    - Modelos são simples (Naive Bayes e Regressão Linear) e treinados localmente; para produção recomenda-se validação e features adicionais.  
+    """
 )
 
-# ---------------------------------------------------------
-# CARREGAMENTO E PRÉ-PROCESSAMENTO BÁSICO
-# ---------------------------------------------------------
+# Footer
+st.markdown("---")
+st.markdown("**Desenvolvido para o desafio técnico Alelo — versão local.**")
+st.caption("Para entrega: crie um repositório GitHub com este script, os CSVs e um README explicativo.")
 
-@st.cache_data
-def load_data():
-    # Substitua pelos caminhos corretos se necessário
-    info = pd.read_csv("heroes_information.csv")
-    powers = pd.read_csv("super_hero_powers.csv")
 
-    # Ajustes básicos
-    info = info.replace(-99, np.nan)
-    info = info.rename(columns={"name": "hero_names"})
 
-    # Merge
-    df = pd.merge(info, powers, on="hero_names", how="inner")
-
-    # Lista de colunas de poderes (todas exceto hero_names)
-    power_cols = list(powers.columns[1:])
-
-    # Garantir que poderes sejam 0/1
-    df[power_cols] = df[power_cols].fillna(False).astype(int)
-
-    return info, powers, df, power_cols
-
-
-info, powers, df, power_cols = load_data()
-
-# ---------------------------------------------------------
-# FUNÇÕES DE MODELAGEM (COM CACHE)
-# ---------------------------------------------------------
-
-@st.cache_resource
-def train_clustering(k_clusters: int = 4):
-    """
-    Treina PCA + KMeans para clustering dos heróis
-    usando poderes + altura + peso.
-    """
-    df_clust = df.copy()
-
-    # Features: poderes + Height + Weight
-    features = power_cols + ["Height", "Weight"]
-    X = df_clust[features].copy()
-
-    # Tratar NaN em Height e Weight
-    X["Height"] = X["Height"].fillna(X["Height"].median())
-    X["Weight"] = X["Weight"].fillna(X["Weight"].median())
-
-    # Padronização
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # PCA para reduzir dimensionalidade (95% da variância)
-    pca = PCA(n_components=0.95, random_state=42)
-    X_pca = pca.fit_transform(X_scaled)
-
-    # KMeans
-    kmeans = KMeans(n_clusters=k_clusters, random_state=42, n_init=10)
-    clusters = kmeans.fit_predict(X_pca)
-
-    df_clust["cluster"] = clusters
-
-    return df_clust, X_pca, pca, kmeans
-
-
-@st.cache_resource
-def train_naive_bayes():
-    """
-    Treina Bernoulli Naive Bayes para prever Alignment (good/bad)
-    usando apenas os poderes (0/1).
-    """
-    df_nb = df.copy()
-    df_nb = df_nb[df_nb["Alignment"].isin(["good", "bad"])].copy()
-    df_nb["target"] = df_nb["Alignment"].map({"good": 1, "bad": 0})
-
-    X = df_nb[power_cols].copy()
-    X = X.fillna(0).astype(int)
-    y = df_nb["target"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.3,
-        random_state=42,
-        stratify=y
-    )
-
-    model = BernoulliNB()
-    model.fit(X_train, y_train)
-
-    y_pred = model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-
-    return model, df_nb, X_train, X_test, y_train, y_test, acc
-
-
-@st.cache_resource
-def train_regressor():
-    """
-    Treina Random Forest Regressor para prever Weight
-    usando poderes + Height.
-    """
-    df_reg = df.copy()
-    df_reg = df_reg[df_reg["Weight"].notna()].copy()
-    df_reg = df_reg[df_reg["Weight"] > 0].copy()
-
-    features = power_cols + ["Height"]
-
-    X = df_reg[features].copy()
-    y = df_reg["Weight"].copy()
-
-    # Tratar NaN
-    X[power_cols] = X[power_cols].fillna(0)
-    X["Height"] = X["Height"].fillna(X["Height"].median())
-
-    X = X.astype(float)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.3,
-        random_state=42
-    )
-
-    rf = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=None,
-        random_state=42,
-        n_jobs=-1
-    )
-    rf.fit(X_train, y_train)
-
-    y_pred = rf.predict(X_test)
-    mae = mean_absolute_error(y_test, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    r2 = r2_score(y_test, y_pred)
-
-    importances = pd.Series(rf.feature_importances_, index=features).sort_values(ascending=False)
-
-    return rf, df_reg, X_train, X_test, y_train, y_test, mae, rmse, r2, importances
-
-
-# ---------------------------------------------------------
-# MENU LATERAL
-# ---------------------------------------------------------
-menu = st.sidebar.radio(
-    "📌 Navegação",
-    [
-        "Documentação",
-        "Exploração de Dados",
-        "Clustering (Grupos de Heróis)",
-        "Classificação (Alinhamento)",
-        "Regressão (Peso)"
-    ]
-)
-
-# ---------------------------------------------------------
-# 1. DOCUMENTAÇÃO
-# ---------------------------------------------------------
-if menu == "Documentação":
-    st.header("📖 Documentação e Instruções de Uso")
-
-    st.markdown(
-        """
-### Visão geral
-
-Esta aplicação foi desenvolvida para:
-
-- Explorar os dados dos super-heróis;
-- Visualizar agrupamentos (clustering) de heróis com base em seus poderes;
-- Classificar o alinhamento (good/bad);
-- Prever o peso de um herói a partir de suas características.
-
-### Como usar
-
-- **Exploração de Dados**  
-  Veja as tabelas, estatísticas descritivas, distribuições e aplique filtros por alinhamento, gênero e editora.
-
-- **Clustering (Grupos de Heróis)**  
-  Visualize os clusters formados a partir dos poderes e características físicas.  
-  Selecione um cluster para ver os principais poderes e o perfil médio do grupo.
-
-- **Classificação (Alinhamento)**  
-  Selecione um herói e veja a previsão de alinhamento (good/bad) pelo modelo Naive Bayes, 
-  além da comparação com o alinhamento real.
-
-- **Regressão (Peso)**  
-  Selecione um herói e veja o peso previsto pelo modelo de regressão Random Forest 
-  em comparação com o peso real (quando disponível).
-
-Todos os modelos são treinados automaticamente a partir dos arquivos:
-- `heroes_information.csv`
-- `super_hero_powers.csv`
-"""
-    )
-
-# ---------------------------------------------------------
-# 2. EXPLORAÇÃO DE DADOS
-# ---------------------------------------------------------
-elif menu == "Exploração de Dados":
-    st.header("🔍 Exploração de Dados")
-
-    st.subheader("Filtros básicos")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        align_filter = st.selectbox(
-            "Filtrar por Alignment:",
-            options=["Todos"] + sorted(info["Alignment"].dropna().unique().tolist())
-        )
-    with col2:
-        gender_filter = st.selectbox(
-            "Filtrar por Gender:",
-            options=["Todos"] + sorted(info["Gender"].dropna().unique().tolist())
-        )
-    with col3:
-        publisher_filter = st.selectbox(
-            "Filtrar por Publisher:",
-            options=["Todos"] + sorted(info["Publisher"].dropna().unique().tolist())
-        )
-
-    df_view = info.copy()
-
-    if align_filter != "Todos":
-        df_view = df_view[df_view["Alignment"] == align_filter]
-    if gender_filter != "Todos":
-        df_view = df_view[df_view["Gender"] == gender_filter]
-    if publisher_filter != "Todos":
-        df_view = df_view[df_view["Publisher"] == publisher_filter]
-
-    st.markdown("#### Tabela de heróis filtrada")
-    st.dataframe(df_view)
-
-    st.markdown("#### Estatísticas descritivas (numéricas)")
-    st.write(df_view.describe())
-
-    st.markdown("#### Distribuição de Alignment")
-    st.bar_chart(df_view["Alignment"].value_counts())
-
-    st.markdown("#### Distribuição de Height (ignora valores faltantes)")
-    st.bar_chart(df_view["Height"].dropna())
-
-# ---------------------------------------------------------
-# 3. CLUSTERING
-# ---------------------------------------------------------
-elif menu == "Clustering (Grupos de Heróis)":
-    st.header("🧩 Clustering – Grupos de Heróis")
-
-    st.markdown(
-        """
-Os heróis foram agrupados com base em seus poderes e características físicas
-(utilizando PCA + KMeans).  
-Use o seletor abaixo para definir o número de clusters.
-"""
-    )
-
-    k = st.slider("Número de clusters (K)", min_value=2, max_value=8, value=4, step=1)
-    df_clust, X_pca, pca_model, kmeans_model = train_clustering(k)
-
-    st.markdown("#### Visualização em 2 componentes principais (PCA)")
-    # Usar apenas as duas primeiras componentes para o gráfico
-    plot_df = pd.DataFrame({
-        "PC1": X_pca[:, 0],
-        "PC2": X_pca[:, 1],
-        "cluster": df_clust["cluster"].astype(str),
-        "hero_names": df_clust["hero_names"]
-    })
-
-    st.scatter_chart(
-        plot_df,
-        x="PC1",
-        y="PC2",
-        color="cluster"
-    )
-
-    st.markdown("#### Perfil dos clusters")
-
-    cluster_ids = sorted(df_clust["cluster"].unique().tolist())
-    selected_cluster = st.selectbox(
-        "Selecione um cluster para explorar:",
-        options=cluster_ids
-    )
-
-    cluster_data = df_clust[df_clust["cluster"] == selected_cluster]
-
-    st.write(f"Número de heróis no cluster {selected_cluster}: **{len(cluster_data)}**")
-
-    st.write("Altura mediana:", cluster_data["Height"].median())
-    st.write("Peso mediano:", cluster_data["Weight"].median())
-
-    mean_powers = cluster_data[power_cols].mean().sort_values(ascending=False)
-    top_powers = mean_powers.head(10)
-
-    st.markdown("Principais poderes (frequência média dentro do cluster):")
-    st.table(top_powers.to_frame("Frequência"))
-
-    st.markdown("Alguns heróis deste cluster:")
-    st.write(cluster_data["hero_names"].head(20).tolist())
-
-# ---------------------------------------------------------
-# 4. CLASSIFICAÇÃO (NAIVE BAYES)
-# ---------------------------------------------------------
-elif menu == "Classificação (Alinhamento)":
-    st.header("⚖️ Classificação – Alinhamento (good/bad)")
-
-    model_nb, df_nb, X_train_nb, X_test_nb, y_train_nb, y_test_nb, acc_nb = train_naive_bayes()
-
-    st.write(f"Acurácia do Naive Bayes (teste): **{acc_nb:.3f}**")
-
-    st.markdown(
-        """
-Selecione um herói com alinhamento conhecido (`good` ou `bad`) 
-para ver a previsão do modelo e comparar com o valor real.
-"""
-    )
-
-    hero_options = df_nb["hero_names"].sort_values().unique().tolist()
-    selected_hero = st.selectbox("Escolha um herói:", hero_options)
-
-    hero_row = df_nb[df_nb["hero_names"] == selected_hero].iloc[0]
-
-    X_hero = hero_row[power_cols].values.reshape(1, -1)
-    pred = model_nb.predict(X_hero)[0]
-    proba = model_nb.predict_proba(X_hero)[0]
-
-    pred_label = "good" if pred == 1 else "bad"
-    real_label = hero_row["Alignment"]
-
-    st.write(f"**Alinhamento real:** {real_label}")
-    st.write(f"**Previsão do modelo:** {pred_label}")
-    st.write(f"Probabilidades (Naive Bayes): good = {proba[1]:.3f}, bad = {proba[0]:.3f}")
-
-    st.markdown("Poderes principais deste herói (valor = 1):")
-    hero_powers_true = hero_row[power_cols][hero_row[power_cols] == 1].index.tolist()
-    st.write(hero_powers_true if hero_powers_true else "Nenhum poder marcado como 1.")
-
-# ---------------------------------------------------------
-# 5. REGRESSÃO (PESO)
-# ---------------------------------------------------------
-elif menu == "Regressão (Peso)":
-    st.header("⚖️ Regulação – Previsão de Peso")
-
-    rf_reg, df_reg, X_train_reg, X_test_reg, y_train_reg, y_test_reg, mae, rmse, r2, importances = train_regressor()
-
-    st.markdown("#### Métricas de desempenho do modelo (Random Forest Regressor)")
-    st.write(f"MAE (erro absoluto médio): **{mae:.2f}**")
-    st.write(f"RMSE (raiz do erro quadrático médio): **{rmse:.2f}**")
-    st.write(f"R² (coeficiente de determinação): **{r2:.3f}**")
-
-    st.markdown("#### Principais variáveis para prever o peso")
-    st.table(importances.head(10).to_frame("Importância"))
-
-    st.markdown(
-        """
-Selecione um herói com peso conhecido para ver a previsão do modelo
-e comparar com o valor real.
-"""
-    )
-
-    hero_options_reg = df_reg["hero_names"].sort_values().unique().tolist()
-    selected_hero_reg = st.selectbox("Escolha um herói:", hero_options_reg)
-
-    hero_row_reg = df_reg[df_reg["hero_names"] == selected_hero_reg].iloc[0]
-
-    # Montar vetor de features
-    features = power_cols + ["Height"]
-    X_hero_reg = hero_row_reg[features].copy()
-
-    # Tratar NaN para o herói selecionado
-    X_hero_reg[power_cols] = X_hero_reg[power_cols].fillna(0)
-    X_hero_reg["Height"] = (
-        X_hero_reg["Height"]
-        if pd.notna(X_hero_reg["Height"])
-        else df_reg["Height"].median()
-    )
-
-    X_hero_reg = X_hero_reg.values.reshape(1, -1)
-
-    pred_weight = rf_reg.predict(X_hero_reg)[0]
-    real_weight = hero_row_reg["Weight"]
-
-    st.write(f"**Peso real:** {real_weight} (quando disponível)")
-    st.write(f"**Peso previsto pelo modelo:** {pred_weight:.2f}")
-
-    st.markdown("Poderes principais deste herói (marcados com 1):")
-    hero_powers_true_reg = hero_row_reg[power_cols][hero_row_reg[power_cols] == 1].index.tolist()
-    st.write(hero_powers_true_reg if hero_powers_true_reg else "Nenhum poder marcado como 1.")
